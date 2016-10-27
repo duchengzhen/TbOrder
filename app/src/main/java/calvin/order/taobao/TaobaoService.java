@@ -7,12 +7,14 @@ import android.content.Intent;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Created by Administrator on 2016/10/26.
  */
-
 public class TaobaoService extends AccessibilityService {
 
     public static final String search_result_activity =
@@ -24,6 +26,10 @@ public class TaobaoService extends AccessibilityService {
     private boolean hasClearEdit = false;
     // 当前前台activity
     private String mForegroundActivity;
+    // 上一个事件
+    private AccessibilityEvent prevEvent;
+    // 当前执行动作的节点
+    private Set<AccessibilityNodeInfo> currentActionNodes = new HashSet<>();
 
     @Override
 
@@ -48,11 +54,12 @@ public class TaobaoService extends AccessibilityService {
         final int type = event.getEventType();
         String typeStr = AccessibilityEvent.eventTypeToString(type);
         Log.e(TAG, "type=" + typeStr);
-        AccessibilityNodeInfo nodeInfo = event.getSource();
-        if (nodeInfo == null) {
+        // 根节点
+        AccessibilityNodeInfo rootNode = getRootInActiveWindow();
+        if (rootNode == null) {
             return;
         }
-        Log.i(TAG, "node=" + nodeInfo.getClassName());
+        Log.i(TAG, "node=" + rootNode.getClassName());
         switch (type) {
             case AccessibilityEvent.TYPE_WINDOWS_CHANGED:
                 break;
@@ -64,20 +71,16 @@ public class TaobaoService extends AccessibilityService {
                 if (isSearchActivity()) {
                     // 在搜索界面
                     List<AccessibilityNodeInfo> editDelNodes =
-                            nodeInfo.findAccessibilityNodeInfosByViewId(
+                            rootNode.findAccessibilityNodeInfosByViewId(
                                     "com.taobao.taobao:id/edit_del_btn");
-                    if (editDelNodes.size() > 0) {
-                        //首先清理文本
-                        if (editDelNodes.get(0).isVisibleToUser()) {
-                            editDelNodes.get(0).performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                            hasClearEdit = true;
-                        }
+                    if (performAction(editDelNodes, AccessibilityNodeInfo.ACTION_CLICK)) {
+                        hasClearEdit = true;
                     }
-                    performSearch(nodeInfo);
+                    performSearch(rootNode);
                 } else if (isSearchResultActivity()) {
                     // 在搜索结果页面
                     List<AccessibilityNodeInfo> listViewNodes =
-                            nodeInfo.findAccessibilityNodeInfosByViewId(
+                            rootNode.findAccessibilityNodeInfosByViewId(
                                     "com.taobao.taobao:id/search_listview");
                 }
                 break;
@@ -86,38 +89,106 @@ public class TaobaoService extends AccessibilityService {
                 if (isSearchResultActivity()) {
                     boolean hasResult = false;
                     List<AccessibilityNodeInfo> titleNodes =
-                            nodeInfo.findAccessibilityNodeInfosByViewId(
+                            rootNode.findAccessibilityNodeInfosByViewId(
                                     "com.taobao.taobao:id/title");
                     if (titleNodes.size() > 0) {
                         for (AccessibilityNodeInfo titleNode : titleNodes) {
                             String className = titleNode.getClassName().toString();
                             if ("android.widget.TextView".equalsIgnoreCase(className)) {
                                 String titleStr = titleNode.getText().toString();
-                                if (titleStr.contains("腰医生")) {
+                                Log.i(TAG, "标题文本->" + titleStr);
+                                if (titleStr.contains("反C曲度")) {
+                                    Log.e(TAG, "bingooooooo");
+                                    // 停止正在执行的事件
+                                    clearAccessibilityFocus();
                                     // 执行点击
-                                    titleNode.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                                    hasResult = true;
+                                    boolean action = performAction(titleNode, AccessibilityNodeInfo.ACTION_CLICK);
+                                    AccessibilityNodeInfo tempNode = titleNode.getParent();
+                                    while (!action) {
+                                        if (tempNode != null) {
+                                            action = performAction(tempNode, AccessibilityNodeInfo.ACTION_CLICK);
+                                            tempNode = tempNode.getParent();
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                    // 执行说明有结果
+                                    hasResult = action;
                                     break;
                                 }
                             }
                         }
                     }
                     if (!hasResult) {
-                        // 当前列表无结果,滚动
+                        // 当前列表无结果,执行滚动
                         List<AccessibilityNodeInfo> listViewNodes =
-                                nodeInfo.findAccessibilityNodeInfosByViewId(
+                                rootNode.findAccessibilityNodeInfosByViewId(
                                         "com.taobao.taobao:id/search_listview");
-                        if (listViewNodes.size() > 0) {
-                            AccessibilityNodeInfo listNode = listViewNodes.get(0);
-                            listNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
-                        }
+                        performAction(listViewNodes, AccessibilityNodeInfo.ACTION_SCROLL_FORWARD);
+                    }
+                    // 防止列表卡在[加载中...]
+                    if (prevEvent != null && prevEvent.getEventType() == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
+                        performLoadMore(rootNode);
                     }
                 }
                 break;
             case AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED:
+
+                break;
+            case AccessibilityEvent.TYPE_VIEW_SCROLLED:
+                // 视图滚动
+                performLoadMore(rootNode);
                 break;
         }
         hasClearEdit = false;
+        prevEvent = event;
+    }
+
+    private void performLoadMore(AccessibilityNodeInfo rootNode) {
+        List<AccessibilityNodeInfo> tipNodes = rootNode.findAccessibilityNodeInfosByViewId("com.taobao.taobao:id/tipText");
+        if (!performAction(tipNodes, AccessibilityNodeInfo.ACTION_CLICK)) {
+            performParentAction(tipNodes, AccessibilityNodeInfo.ACTION_CLICK);
+        }
+    }
+
+    private boolean performParentAction(List<AccessibilityNodeInfo> nodeInfos, int action) {
+
+        boolean result = false;
+        for (AccessibilityNodeInfo nodeInfo : nodeInfos) {
+            if (performAction(nodeInfo.getParent(), action)) {
+                result = true;
+            }
+        }
+        return result;
+    }
+
+    private boolean performAction(List<AccessibilityNodeInfo> nodeInfos, int action) {
+        boolean result = false;
+        for (AccessibilityNodeInfo nodeInfo : nodeInfos) {
+            if (performAction(nodeInfo, action)) {
+                result = true;
+            }
+        }
+        return result;
+    }
+
+    private boolean performAction(AccessibilityNodeInfo nodeInfo, int action) {
+        if (nodeInfo == null || !nodeInfo.isVisibleToUser()) {
+            return false;
+        }
+        boolean result = nodeInfo.performAction(action);
+        if (result) {
+            currentActionNodes.add(nodeInfo);
+        }
+        return result;
+    }
+
+    private void clearAccessibilityFocus() {
+        for (AccessibilityNodeInfo currentActionNode : currentActionNodes) {
+            currentActionNode.performAction(AccessibilityNodeInfo.ACTION_CLEAR_ACCESSIBILITY_FOCUS);
+        }
+        // 清理
+        currentActionNodes.clear();
     }
 
     private void performSearch(AccessibilityNodeInfo nodeInfo) {
